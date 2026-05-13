@@ -1,0 +1,151 @@
+name: Build Nuvio Tizen WGT
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'docs/**'
+      - '.github/workflows/sync-upstream.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  TIZEN_STUDIO_VER: '5.5'
+  CERT_NAME: Nuvio
+  CERT_PASSWORD: '1234'
+  WRAPPER_DIR: tizen-wrapper
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install expect
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y expect
+
+      - name: Download & install Tizen Studio
+        run: |
+          curl -L -o tizen-installer \
+            "https://download.tizen.org/sdk/Installer/tizen-studio_${TIZEN_STUDIO_VER}/web-cli_Tizen_Studio_${TIZEN_STUDIO_VER}_ubuntu-64.bin"
+          chmod +x tizen-installer
+          ./tizen-installer --accept-license "${GITHUB_WORKSPACE}/tizen-studio"
+          rm tizen-installer
+
+      - name: Create signing certificate
+        run: |
+          TIZEN="${GITHUB_WORKSPACE}/tizen-studio/tools/ide/bin/tizen"
+          "$TIZEN" certificate \
+            -a "$CERT_NAME" -p "$CERT_PASSWORD" \
+            -c NL -s Community -ct World \
+            -o "$CERT_NAME" -n "$CERT_NAME" \
+            -e community@example.org -f "$CERT_NAME"
+          "$TIZEN" security-profiles add \
+            -n "$CERT_NAME" \
+            -a "${GITHUB_WORKSPACE}/tizen-studio-data/keystore/author/${CERT_NAME}.p12" \
+            -p "$CERT_PASSWORD"
+          "$TIZEN" cli-config \
+            "profiles.path=${GITHUB_WORKSPACE}/tizen-studio-data/profile/profiles.xml"
+
+      - name: Install npm deps & build web app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          ls -la dist/
+
+      - name: Stage Tizen wrapper and sync built app into it
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/${WRAPPER_DIR}"
+          # sync:tizen requires config.xml to exist in the wrapper before it patches it.
+          cp tizen/config.xml "${GITHUB_WORKSPACE}/${WRAPPER_DIR}/config.xml"
+
+          # sync:tizen copies dist/{assets,css,res,app.bundle.js,nuvio.env.js},
+          # generates index.html + main.js, patches config.xml, copies the icon,
+          # and ships services/com.nuvio.tizen.service/ alongside.
+          npm run sync:tizen -- "${GITHUB_WORKSPACE}/${WRAPPER_DIR}"
+
+          echo "--- wrapper contents ---"
+          ls -la "${GITHUB_WORKSPACE}/${WRAPPER_DIR}"
+          echo "--- patched config.xml ---"
+          cat "${GITHUB_WORKSPACE}/${WRAPPER_DIR}/config.xml"
+
+      - name: Build Tizen web project
+        run: |
+          cd "${GITHUB_WORKSPACE}/${WRAPPER_DIR}"
+          "${GITHUB_WORKSPACE}/tizen-studio/tools/ide/bin/tizen" build-web \
+            -e ".*" -e "*.map"
+
+      - name: Prepare profiles.xml for non-interactive signing
+        run: |
+          PROFILES="${GITHUB_WORKSPACE}/tizen-studio-data/profile/profiles.xml"
+          sed -i "s|${GITHUB_WORKSPACE}/tizen-studio-data/keystore/author/${CERT_NAME}.pwd|${CERT_PASSWORD}|g" "$PROFILES"
+          sed -i "s|${GITHUB_WORKSPACE}/tizen-studio-data/tools/certificate-generator/certificates/distributor/tizen-distributor-signer.pwd|tizenpkcs12passfordsigner|g" "$PROFILES"
+          sed -i 's|password=""|password="tizenpkcs12passfordsigner"|g' "$PROFILES"
+
+      - name: Create expect script for packaging
+        run: |
+          cat > package.exp <<'EOF'
+          #!/usr/bin/expect -f
+          set timeout 300
+          set wrapper $env(GITHUB_WORKSPACE)/$env(WRAPPER_DIR)
+          spawn $env(GITHUB_WORKSPACE)/tizen-studio/tools/ide/bin/tizen package -t wgt -s Nuvio -- $wrapper/.buildResult
+          expect {
+            "Author password:" { send "1234\r"; exp_continue }
+            "Save author password" { send "n\r"; exp_continue }
+            "Distributor1 password:" { send "tizenpkcs12passfordsigner\r"; exp_continue }
+            "Save distributor1 password" { send "n\r"; exp_continue }
+            eof
+          }
+          EOF
+          chmod +x package.exp
+
+      - name: Package WGT
+        run: |
+          ./package.exp
+          mkdir -p release
+          wgt=$(find "${GITHUB_WORKSPACE}/${WRAPPER_DIR}/.buildResult" -maxdepth 1 -name '*.wgt' | head -n1)
+          [ -n "$wgt" ] || { echo "::error::No .wgt produced"; exit 1; }
+          mv "$wgt" release/Nuvio.wgt
+          ls -la release/
+
+      - name: Compute release metadata
+        id: meta
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          DATE=$(date -u +'%Y-%m-%d-%H%M')
+          PRETTY=$(date -u +'%Y-%m-%d %H:%M UTC')
+          echo "version=$VERSION"        >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}-${DATE}" >> "$GITHUB_OUTPUT"
+          echo "pretty=$PRETTY"          >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "Nuvio Tizen v${{ steps.meta.outputs.version }} (${{ steps.meta.outputs.pretty }})"
+          files: release/Nuvio.wgt
+          body: |
+            Automated Tizen `.wgt` build from this fork of
+            [NuvioMedia/NuvioWeb](https://github.com/NuvioMedia/NuvioWeb),
+            kept in sync daily by `sync-upstream.yml`.
+
+            Wrapper is generated via the upstream-supported `npm run sync:tizen` flow
+            (companion media service included).
+
+            Built ${{ steps.meta.outputs.pretty }}.
+
+            ## Installation
+            1. Enable Developer Mode on your Samsung Tizen TV.
+            2. Sideload `Nuvio.wgt` via Tizen Studio or `sdb`.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

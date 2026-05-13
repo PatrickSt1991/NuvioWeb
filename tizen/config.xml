@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Starter Tizen wrapper config.xml. The build workflow runs `npm run sync:tizen` against
+  this file, which patches in: icon, name, widget version (from package.json), the
+  web.service feature, and a tizen:service entry for the companion media service.
+  Only edit the package/application id, profile, privileges, and access entries below.
+-->
+<widget xmlns="http://www.w3.org/ns/widgets"
+        xmlns:tizen="http://tizen.org/ns/widgets"
+        id="http://patrickst1991.github.io/NuvioWeb"
+        version="0.0.1"
+        viewmodes="maximized">
+    <tizen:application id="NUVIO00001.NuvioWeb"
+                       package="NUVIO00001"
+                       required_version="2.3"/>
+    <content src="index.html"/>
+    <feature name="http://tizen.org/feature/screen.size.normal.1080.1920"/>
+    <tizen:profile name="tv-samsung"/>
+    <access origin="*" subdomains="true"/>
+    <tizen:privilege name="http://tizen.org/privilege/internet"/>
+    <tizen:privilege name="http://tizen.org/privilege/network.get"/>
+    <tizen:privilege name="http://tizen.org/privilege/filesystem.read"/>
+    <tizen:setting screen-orientation="landscape"
+                   background-support="enable"
+                   encryption="disable"
+                   install-location="auto"/>
+</widget>

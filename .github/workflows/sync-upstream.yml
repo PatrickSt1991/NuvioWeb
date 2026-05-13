@@ -1,0 +1,53 @@
+name: Sync from upstream
+
+on:
+  schedule:
+    # 02:00 UTC daily — runs before the downstream tizen-community-packages 04:00 UTC scan
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote and fetch
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/NuvioMedia/NuvioWeb.git
+          else
+            git remote add upstream https://github.com/NuvioMedia/NuvioWeb.git
+          fi
+          git fetch upstream main
+
+      - name: Merge upstream/main into origin/main
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Already up-to-date with upstream/main — nothing to do."
+            exit 0
+          fi
+
+          before=$(git rev-parse HEAD)
+          if ! git merge --no-edit upstream/main; then
+            echo "::error::Merge conflict with upstream/main. Resolve manually and push."
+            git merge --abort || true
+            exit 1
+          fi
+          after=$(git rev-parse HEAD)
+
+          if [ "$before" = "$after" ]; then
+            echo "Merge produced no new commit — nothing to push."
+          else
+            git push origin main
+          fi
