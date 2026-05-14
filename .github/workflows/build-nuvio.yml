@@ -18,7 +18,7 @@ env:
   CERT_NAME: Nuvio
   CERT_PASSWORD: '1234'
   WRAPPER_DIR: tizen-wrapper
-  # URL the hosted shell redirects to. Mirrors NuvioTVTizen/app/main.js.
+  # URL the Online shell redirects to. Mirrors NuvioTVTizen/app/main.js.
   HOSTED_APP_URL: 'https://web.nuvioapp.space/'
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [hosted, selfhosted]
+        variant: [online, native]
     steps:
       - uses: actions/checkout@v4
 
@@ -64,17 +64,13 @@ jobs:
             "profiles.path=${GITHUB_WORKSPACE}/tizen-studio-data/profile/profiles.xml"
 
       # =================================================================
-      # SELF-HOSTED VARIANT
+      # NATIVE VARIANT
       # Full packaged build with TMDB / Supabase / endpoint values baked
       # into nuvio.env.js from repo secrets. App runs locally on the TV
-      # and talks directly to those backends.
-      #
-      # For initial testing, set the repo secrets to upstream's published
-      # values (from https://web.nuvioapp.space/nuvio.env.js). Swap them
-      # for your own values once you've stood up your own backend.
+      # and talks directly to those backends — no upstream dependency.
       # =================================================================
-      - name: Guard required secrets (selfhosted)
-        if: matrix.variant == 'selfhosted'
+      - name: Guard required secrets (native)
+        if: matrix.variant == 'native'
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -85,12 +81,12 @@ jobs:
           [ -z "$SUPABASE_URL" ]      && missing+=("SUPABASE_URL")
           [ -z "$SUPABASE_ANON_KEY" ] && missing+=("SUPABASE_ANON_KEY")
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Missing required secrets for selfhosted build: ${missing[*]}"
+            echo "::error::Missing required secrets for native build: ${missing[*]}"
             exit 1
           fi
 
-      - name: Write static nuvio.env.js from secrets (selfhosted)
-        if: matrix.variant == 'selfhosted'
+      - name: Write static nuvio.env.js from secrets (native)
+        if: matrix.variant == 'native'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
@@ -104,8 +100,6 @@ jobs:
           ADDON_REMOTE_BASE_URL: ${{ secrets.ADDON_REMOTE_BASE_URL }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
         run: |
-          # Mirrors the exact shape served at web.nuvioapp.space/nuvio.env.js
-          # (assigns both NUVIO_ENV and __NUVIO_ENV__ so either consumer works).
           cat > nuvio.env.js <<EOF
           (function defineNuvioEnv() {
             var root = typeof globalThis !== "undefined" ? globalThis : window;
@@ -130,26 +124,23 @@ jobs:
           EOF
           echo "Wrote static nuvio.env.js ($(wc -c < nuvio.env.js) bytes)"
 
-      - name: Install npm deps & build web app (selfhosted)
-        if: matrix.variant == 'selfhosted'
+      - name: Install npm deps & build web app (native)
+        if: matrix.variant == 'native'
         run: |
           npm ci --no-audit --no-fund
           npm run build
           ls -la dist/
 
-      - name: Stage Tizen wrapper and sync built app (selfhosted)
-        if: matrix.variant == 'selfhosted'
+      - name: Stage Tizen wrapper and sync built app (native)
+        if: matrix.variant == 'native'
         run: |
           mkdir -p "${GITHUB_WORKSPACE}/${WRAPPER_DIR}"
           cp tizen/config.xml "${GITHUB_WORKSPACE}/${WRAPPER_DIR}/config.xml"
           npm run sync:tizen -- "${GITHUB_WORKSPACE}/${WRAPPER_DIR}"
 
-      - name: Ensure network privileges in config.xml (selfhosted)
-        if: matrix.variant == 'selfhosted'
+      - name: Ensure network privileges in config.xml (native)
+        if: matrix.variant == 'native'
         run: |
-          # Defensive — upstream's tizen/config.xml almost certainly already
-          # has these since the running app calls Supabase/TMDB/etc., but
-          # guarantee it idempotently here.
           CFG="${GITHUB_WORKSPACE}/${WRAPPER_DIR}/config.xml"
           if ! grep -q 'privilege/internet' "$CFG"; then
             sed -i 's|</widget>|  <tizen:privilege name="http://tizen.org/privilege/internet"/>\n</widget>|' "$CFG"
@@ -161,37 +152,40 @@ jobs:
           cat "$CFG"
 
       # =================================================================
-      # HOSTED VARIANT
+      # ONLINE VARIANT
       # Thin redirect shell that mirrors NuvioMedia/NuvioTVTizen/app/main.js.
       # The .wgt contains nothing but a launcher that does
       # window.location.replace("https://web.nuvioapp.space/?source=...").
       # All keys, all logic, all assets live on upstream's server.
       # =================================================================
-      - name: Stage thin redirect wrapper (hosted)
-        if: matrix.variant == 'hosted'
+      - name: Stage thin redirect wrapper (online)
+        if: matrix.variant == 'online'
         run: |
           mkdir -p "${GITHUB_WORKSPACE}/${WRAPPER_DIR}"
 
-          # config.xml — distinct package id so this and selfhosted can
-          # coexist on a TV. Wildcard network access for the redirect target.
+          # config.xml — Tizen-valid:
+          #   package: must match [0-9a-zA-Z]{10} (exactly 10 chars)
+          #   id:      "<package>.<AppName>"
+          #   profile: "tv" (NOT "tv-samsung")
+          #   required_version: 2.3 for broad TV firmware compatibility
           cat > "${GITHUB_WORKSPACE}/${WRAPPER_DIR}/config.xml" <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <widget xmlns="http://www.w3.org/ns/widgets"
                   xmlns:tizen="http://tizen.org/ns/widgets"
-                  id="http://nuvio.fork/tizen-hosted"
+                  id="http://nuvio.fork/tizen-online"
                   version="1.0.0"
                   viewmodes="maximized">
-            <tizen:application id="NuvioFork.TizenHosted"
-                               package="NuvioFork"
-                               required_version="3.0"/>
+            <tizen:application id="NuvioOnlin.TizenOnline"
+                               package="NuvioOnlin"
+                               required_version="2.3"/>
             <content src="index.html"/>
             <icon src="icon.png"/>
-            <name>Nuvio TV (Hosted)</name>
+            <name>Nuvio TV (Online)</name>
             <tizen:privilege name="http://tizen.org/privilege/internet"/>
             <access origin="*" subdomains="true"/>
             <tizen:allow-navigation>*</tizen:allow-navigation>
             <tizen:setting screen-orientation="landscape" background-support="disable"/>
-            <tizen:profile name="tv-samsung"/>
+            <tizen:profile name="tv"/>
           </widget>
           EOF
 
@@ -244,7 +238,7 @@ jobs:
             cp res/icon.png "${GITHUB_WORKSPACE}/${WRAPPER_DIR}/icon.png"
           fi
 
-          echo "--- hosted wrapper contents ---"
+          echo "--- online wrapper contents ---"
           ls -la "${GITHUB_WORKSPACE}/${WRAPPER_DIR}"
           echo "--- config.xml ---"
           cat "${GITHUB_WORKSPACE}/${WRAPPER_DIR}/config.xml"
@@ -290,10 +284,10 @@ jobs:
           mkdir -p release
           wgt=$(find "${GITHUB_WORKSPACE}/${WRAPPER_DIR}/.buildResult" -maxdepth 1 -name '*.wgt' | head -n1)
           [ -n "$wgt" ] || { echo "::error::No .wgt produced"; exit 1; }
-          if [ "${{ matrix.variant }}" = "hosted" ]; then
-            mv "$wgt" release/Nuvio-Hosted.wgt
+          if [ "${{ matrix.variant }}" = "online" ]; then
+            mv "$wgt" release/Nuvio-Online.wgt
           else
-            mv "$wgt" release/Nuvio-SelfHosted.wgt
+            mv "$wgt" release/Nuvio-Native.wgt
           fi
           ls -la release/
 
@@ -343,14 +337,15 @@ jobs:
 
             Two variants per release:
 
-            - **`Nuvio-Hosted.wgt`** — thin redirect shell. Opens
+            - **`Nuvio-Online.wgt`** — thin redirect shell. Opens
               `https://web.nuvioapp.space/` in a Tizen WebView. Mirrors
               the approach of `NuvioMedia/NuvioTVTizen` but packaged as
               a sideloadable `.wgt` rather than a TizenBrew module.
               Depends on upstream's hosted endpoint staying online.
-            - **`Nuvio-SelfHosted.wgt`** — full app bundle with all
-              backend endpoints (TMDB, Supabase, addon backend, etc.)
-              baked into `nuvio.env.js` from repository secrets.
+            - **`Nuvio-Native.wgt`** — full app bundle with all backend
+              endpoints (TMDB, Supabase, addon backend, etc.) baked into
+              `nuvio.env.js` from repository secrets. Runs locally on the
+              TV without depending on upstream's hosted instance.
 
             Built ${{ steps.meta.outputs.pretty }}.
 
