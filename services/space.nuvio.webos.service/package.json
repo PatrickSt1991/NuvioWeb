@@ -1,5 +1,5 @@
 {
-  "name": "com.nuvio.tizen.service",
+  "name": "space.nuvio.webos.service",
   "version": "0.1.7",
   "private": true,
   "main": "src/index.js"
